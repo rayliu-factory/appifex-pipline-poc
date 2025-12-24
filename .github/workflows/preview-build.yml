@@ -1,0 +1,256 @@
+name: Preview Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to build from'
+        required: true
+        default: 'develop'
+      build_number:
+        description: 'Build number (optional, will auto-increment if empty)'
+        required: false
+
+env:
+  SCHEME: 'TodoApp'
+
+jobs:
+  build-preview:
+    name: Build Ad Hoc for Preview
+    runs-on: self-hosted
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.inputs.branch }}
+
+    - name: Show Xcode version
+      run: xcodebuild -version
+
+    - name: Check for XcodeGen
+      run: |
+        if ! command -v xcodegen &> /dev/null; then
+          echo "Installing XcodeGen..."
+          brew install xcodegen
+        else
+          echo "XcodeGen already installed"
+        fi
+
+    - name: Generate Xcode project
+      run: xcodegen generate
+
+    - name: Resolve dependencies
+      run: xcodebuild -resolvePackageDependencies -project TodoApp.xcodeproj -scheme ${{ env.SCHEME }}
+
+    - name: Import certificates and provisioning profiles
+      env:
+        BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+        P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+        BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
+        KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+      run: |
+        # Create variables
+        CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
+        PP_PATH=$RUNNER_TEMP/build_pp.mobileprovision
+        KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+
+        # Import certificate and provisioning profile from secrets
+        echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o $CERTIFICATE_PATH
+        echo -n "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode -o $PP_PATH
+
+        # Create temporary keychain
+        security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+        security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+        security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+        # Import certificate to keychain
+        security import $CERTIFICATE_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+        security list-keychain -d user -s $KEYCHAIN_PATH
+
+        # Apply provisioning profile
+        mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+        cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles
+
+    - name: Increment build number
+      id: build_number
+      run: |
+        if [ -z "${{ github.event.inputs.build_number }}" ]; then
+          # Auto-increment based on run number
+          BUILD_NUMBER=${{ github.run_number }}
+        else
+          BUILD_NUMBER=${{ github.event.inputs.build_number }}
+        fi
+        echo "BUILD_NUMBER=$BUILD_NUMBER" >> $GITHUB_OUTPUT
+        echo "Using build number: $BUILD_NUMBER"
+
+    - name: Build Ad Hoc IPA
+      run: |
+        xcodebuild archive \
+          -project TodoApp.xcodeproj \
+          -scheme ${{ env.SCHEME }} \
+          -configuration Release \
+          -archivePath $RUNNER_TEMP/TodoApp.xcarchive \
+          -destination 'generic/platform=iOS' \
+          CURRENT_PROJECT_VERSION=${{ steps.build_number.outputs.BUILD_NUMBER }}
+
+        xcodebuild -exportArchive \
+          -archivePath $RUNNER_TEMP/TodoApp.xcarchive \
+          -exportOptionsPlist .github/workflows/ExportOptions-AdHoc.plist \
+          -exportPath $RUNNER_TEMP/build \
+          -allowProvisioningUpdates
+
+    - name: Generate manifest.plist for web deployment
+      run: |
+        cat > $RUNNER_TEMP/build/manifest.plist << EOF
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>items</key>
+            <array>
+                <dict>
+                    <key>assets</key>
+                    <array>
+                        <dict>
+                            <key>kind</key>
+                            <string>software-package</string>
+                            <key>url</key>
+                            <string>https://YOUR_DOMAIN/builds/TodoApp-${{ steps.build_number.outputs.BUILD_NUMBER }}.ipa</string>
+                        </dict>
+                    </array>
+                    <key>metadata</key>
+                    <dict>
+                        <key>bundle-identifier</key>
+                        <string>com.demo.TodoApp</string>
+                        <key>bundle-version</key>
+                        <string>1.0</string>
+                        <key>kind</key>
+                        <string>software</string>
+                        <key>title</key>
+                        <string>TodoApp Preview Build ${{ steps.build_number.outputs.BUILD_NUMBER }}</string>
+                    </dict>
+                </dict>
+            </array>
+        </dict>
+        </plist>
+        EOF
+
+    - name: Generate install page
+      run: |
+        cat > $RUNNER_TEMP/build/install.html << 'EOF'
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>TodoApp Preview - Build ${{ steps.build_number.outputs.BUILD_NUMBER }}</title>
+            <style>
+                body {
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                    max-width: 600px;
+                    margin: 50px auto;
+                    padding: 20px;
+                    text-align: center;
+                }
+                .install-btn {
+                    display: inline-block;
+                    background: #007AFF;
+                    color: white;
+                    padding: 15px 30px;
+                    border-radius: 10px;
+                    text-decoration: none;
+                    font-size: 18px;
+                    margin: 20px 0;
+                }
+                .info {
+                    background: #f5f5f5;
+                    padding: 20px;
+                    border-radius: 10px;
+                    margin: 20px 0;
+                }
+            </style>
+        </head>
+        <body>
+            <h1>📱 TodoApp Preview</h1>
+            <p>Build #${{ steps.build_number.outputs.BUILD_NUMBER }}</p>
+            <p>Branch: ${{ github.event.inputs.branch }}</p>
+
+            <a href="itms-services://?action=download-manifest&url=https://YOUR_DOMAIN/builds/manifest.plist" class="install-btn">
+                Install on iOS Device
+            </a>
+
+            <div class="info">
+                <h3>📋 Installation Instructions</h3>
+                <ol style="text-align: left;">
+                    <li>Open this page on your iOS device (Safari only)</li>
+                    <li>Tap "Install on iOS Device" button</li>
+                    <li>Tap "Install" when prompted</li>
+                    <li>Go to Settings > General > VPN & Device Management</li>
+                    <li>Trust the developer certificate</li>
+                    <li>Launch the app from your home screen</li>
+                </ol>
+            </div>
+
+            <div class="info">
+                <h3>ℹ️ Build Information</h3>
+                <p><strong>Commit:</strong> ${{ github.sha }}</p>
+                <p><strong>Built:</strong> ${{ github.event.repository.updated_at }}</p>
+            </div>
+        </body>
+        </html>
+        EOF
+
+    - name: Upload IPA as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: TodoApp-AdHoc-Build-${{ steps.build_number.outputs.BUILD_NUMBER }}
+        path: |
+          ${{ runner.temp }}/build/TodoApp.ipa
+          ${{ runner.temp }}/build/manifest.plist
+          ${{ runner.temp }}/build/install.html
+        retention-days: 30
+
+    - name: Upload to web server (optional)
+      if: false  # Set to true when you have a web server configured
+      run: |
+        # Example: Upload to S3, Azure, or your web server
+        # aws s3 cp $RUNNER_TEMP/build/TodoApp.ipa s3://your-bucket/builds/
+        # aws s3 cp $RUNNER_TEMP/build/manifest.plist s3://your-bucket/builds/
+        # aws s3 cp $RUNNER_TEMP/build/install.html s3://your-bucket/builds/
+        echo "Configure your deployment here"
+
+    - name: Clean up keychain and provisioning profile
+      if: always()
+      run: |
+        security delete-keychain $RUNNER_TEMP/app-signing.keychain-db || true
+        rm ~/Library/MobileDevice/Provisioning\ Profiles/build_pp.mobileprovision || true
+
+    - name: Comment on PR with install link
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const buildNumber = '${{ steps.build_number.outputs.BUILD_NUMBER }}';
+          const message = `## 📱 Preview Build Ready!
+
+          **Build #${buildNumber}** is ready for testing.
+
+          ### 📥 Download
+          - [Download artifacts](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+          ### 📋 Installation
+          1. Download the artifact from the link above
+          2. Extract the ZIP file
+          3. Upload \`TodoApp.ipa\`, \`manifest.plist\`, and \`install.html\` to your web server
+          4. Open \`install.html\` on your iOS device
+          5. Follow the installation instructions
+
+          ⚠️ **Note:** Requires Ad Hoc provisioning profile with registered device UDIDs.`;
+
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: message
+          });

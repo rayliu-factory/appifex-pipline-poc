@@ -1,0 +1,10 @@
+# Code owners for the TodoApp project
+# These users will be automatically requested for review when PRs are opened
+
+# Default owner for everything
+* @your-github-username
+
+# Specific owners for different parts
+/Sources/TodoApp/Features/ @your-github-username
+/Tests/ @your-github-username
+/.github/workflows/ @your-github-username

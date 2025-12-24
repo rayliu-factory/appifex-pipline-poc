@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+env:
+  IOS_SIMULATOR: 'iPhone 15'
+
+jobs:
+  build-and-test:
+    name: Build and Test
+    runs-on: self-hosted
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Show Xcode version
+      run: xcodebuild -version
+
+    - name: Show available simulators
+      run: xcrun simctl list devices available
+
+    - name: Check for XcodeGen
+      run: |
+        if ! command -v xcodegen &> /dev/null; then
+          echo "Installing XcodeGen..."
+          brew install xcodegen
+        else
+          echo "XcodeGen already installed"
+        fi
+
+    - name: Generate Xcode project
+      run: xcodegen generate
+
+    - name: Resolve Swift Package dependencies
+      run: xcodebuild -resolvePackageDependencies -project TodoApp.xcodeproj -scheme TodoApp
+
+    - name: Build for testing
+      run: |
+        xcodebuild build-for-testing \
+          -project TodoApp.xcodeproj \
+          -scheme TodoApp \
+          -destination "platform=iOS Simulator,name=${{ env.IOS_SIMULATOR }}" \
+          -configuration Debug \
+          CODE_SIGN_IDENTITY="" \
+          CODE_SIGNING_REQUIRED=NO \
+          ONLY_ACTIVE_ARCH=NO
+
+    - name: Run tests
+      run: |
+        xcodebuild test-without-building \
+          -project TodoApp.xcodeproj \
+          -scheme TodoApp \
+          -destination "platform=iOS Simulator,name=${{ env.IOS_SIMULATOR }}" \
+          -configuration Debug \
+          CODE_SIGN_IDENTITY="" \
+          CODE_SIGNING_REQUIRED=NO \
+          ONLY_ACTIVE_ARCH=NO
+
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-results
+        path: |
+          ~/Library/Logs/DiagnosticReports/
+          ~/Library/Developer/Xcode/DerivedData/*/Logs/Test/*.xcresult
+        retention-days: 7
+
+  lint:
+    name: SwiftLint
+    runs-on: macos-14
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install SwiftLint
+      run: brew install swiftlint
+
+    - name: Run SwiftLint
+      run: swiftlint lint --reporter github-actions-logging
+      continue-on-error: true

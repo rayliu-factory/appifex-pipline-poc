@@ -1,0 +1,40 @@
+name: PR Checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  validate-pr:
+    name: Validate PR
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Check PR title
+      uses: amannn/action-semantic-pull-request@v5
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        types: |
+          feat
+          fix
+          docs
+          refactor
+          test
+          chore
+        requireScope: false
+
+    - name: PR Size Check
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const pr = context.payload.pull_request;
+          const additions = pr.additions;
+          const deletions = pr.deletions;
+          const changes = additions + deletions;
+
+          if (changes > 1000) {
+            core.setFailed('PR is too large (>1000 lines). Please split into smaller PRs.');
+          } else if (changes > 500) {
+            core.warning('PR is large (>500 lines). Consider splitting if possible.');
+          }

@@ -1,0 +1,28 @@
+disabled_rules:
+  - trailing_whitespace
+  - line_length
+
+opt_in_rules:
+  - empty_count
+  - explicit_init
+
+included:
+  - Sources
+
+excluded:
+  - .build
+  - .swiftpm
+  - Tests
+  - TodoApp.xcodeproj
+
+line_length:
+  warning: 120
+  error: 200
+
+identifier_name:
+  min_length:
+    warning: 2
+  excluded:
+    - id
+    - db
+    - to
